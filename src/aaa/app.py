@@ -1,6 +1,5 @@
 """Streamlit app for Gen AI hackathon, team AAA"""
 
-import functools
 import hashlib
 import os
 from collections import defaultdict
@@ -10,39 +9,14 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 from langchain_community.llms import OpenAI
-from langchain_community.document_loaders import (DirectoryLoader,
-                                                  Docx2txtLoader,
-                                                  UnstructuredCSVLoader,
-                                                  UnstructuredExcelLoader,
-                                                  UnstructuredImageLoader,
-                                                  UnstructuredMarkdownLoader,
-                                                  UnstructuredPDFLoader,
-                                                  UnstructuredWordDocumentLoader,
-                                                  UnstructuredHTMLLoader)
 
-import sys
-sys.path.append(r'C:\Users\BNi\IdeaProjects\hackathon_AAA\DocUpdaterAAA\src')
-
-from aaa import _DATA_DIR
+from aaa import _DATA_DIR, _DEMO_DATA_DIR
 from aaa.core_processor import CoreProcessor
-from aaa.doc_handler import load_docx_unstructured
 from core_processor import CoreProcessor as doc_updater
-from doc_handler import load_docx_unstructured
 from langchain.prompts import (ChatPromptTemplate, PromptTemplate,
                                FewShotPromptTemplate)
 
-
-
 _SHA1_BUF_SIZE = 65536
-
-_UNSTRUCTURED_LOADERS = {  # TODO: include additional extensions and loaders as needed
-    '.csv': UnstructuredCSVLoader,
-    '.docx': functools.partial(UnstructuredWordDocumentLoader, mode='elements'),
-    '.jpeg': UnstructuredImageLoader,
-    '.html': functools.partial(UnstructuredHTMLLoader, mode='elements'),
-    '.md': functools.partial(UnstructuredMarkdownLoader, mode='elements'),
-    '.xlsx': UnstructuredExcelLoader,  # does this need a sheet name?
-}
 
 
 def get_file_hash(fp):
@@ -82,7 +56,7 @@ def group_uploaded_files_by_ext(files):
     return dict(d)
 
 
-def process_uploaded_files(files, descriptions) -> str | None:
+def process_uploaded_files(files, descriptions) -> CoreProcessor | None:
     copied_files = copy_uploaded_files_to_tmp_dir(files)
     file_paths_by_ext = group_uploaded_files_by_ext(copied_files)
 
@@ -95,19 +69,6 @@ def process_uploaded_files(files, descriptions) -> str | None:
     # TODO: if more than one docx file, show selectbox, ask user to select which doc is target?
     target_file_path = file_paths_by_ext['.docx'][0]
     target_file_name = os.path.split(target_file_path)[1]
-
-    # load unstructured data
-    docs = []
-    for ext, file_paths in file_paths_by_ext.items():
-        loader = _UNSTRUCTURED_LOADERS.get(ext)
-        if not loader:
-            st.write(f'{ext} not supported')
-            return
-        for fp in file_paths:
-            data = loader(fp).load()
-            for obj in data:
-                obj.metadata["source_document"] = target_file_name
-            docs += data
 
     # collect new table file paths and descriptions for core processor
     new_tables = []
@@ -133,22 +94,7 @@ def process_uploaded_files(files, descriptions) -> str | None:
         new_images=new_images,
     )
 
-    # generate summary
-    # summary = cp.summarize_document(docs)
-    summary = 'placeholder to preserve tokens'
-
-    # send to vector store
-    # cp.add_documents_to_vector_store(docs)
-
-    return summary, cp
-
-
-def to_dataframe_safe(data: Any) -> pd.DataFrame:
-    try:
-        return pd.DataFrame(data)
-    except Exception as e:
-        print(f'Failed to convert content to dataframe\ndata={data!r}\nerror={e!r}')
-        return data
+    return cp
 
 
 def generate_llm_response(input_text):
@@ -164,7 +110,10 @@ if not openai_api_key:
     st.stop()
 
 tab1, tab2, tab3 = st.tabs(['Generate', 'Audit', 'Q&A'])
-cp = None
+
+cp = st.session_state.get('core_processor')
+summary = st.session_state.get('summary')
+updated_doc = st.session_state.get('updated_doc')
 
 with tab1:
     st.header('Generate updated document')
@@ -194,28 +143,41 @@ with tab1:
                     file_descriptions[selected_file] = file_description
 
         # process uploaded files
-        with st.spinner('Processing uploaded files...'):
-            summary, cp = process_uploaded_files(uploaded_files, file_descriptions)
+        if not cp:
+            with st.spinner('Processing uploaded files...'):
+                cp = process_uploaded_files(uploaded_files, file_descriptions)
 
-        # show summary of target document before updating it
-        if summary:
+        # proceed once core processor is initialized
+        if cp:
+
+            # show summary of target document before updating it
+            if not summary:
+                with st.spinner('Generating summary...'):
+                    summary = cp.summarize_document()
+                    st.session_state['summary'] = summary
             with st.expander('Summary of uploaded document'):
                 st.write(summary)
 
-        # generate updated document
-        generate_btn_col, download_btn_col = st.columns([0.25, 0.1])
-        with generate_btn_col:
-            generate_btn = st.button('Generate updated document', type='primary')
-        if generate_btn:
-            with st.spinner('Generating document...'):
-                cp.update_document()
+            # generate updated document
+            if st.button('Generate updated document', type='primary'):
+                with st.spinner('Generating document...'):
+                    cp.update_document()
+                    st.session_state['core_processor'] = cp
 
-            # download updated document
-            if cp.document_path_new:
-                with open(cp.document_path_new, 'rb') as f:
-                    updated_doc = f.read()
-                with download_btn_col:
-                    st.download_button('Download', data=updated_doc, file_name=cp.document_name_new)
+                # download updated document
+                if cp.document_path_new and st.session_state.get('updated_doc') is None:
+                    fp_updated_doc_for_demo = os.path.join(
+                        _DEMO_DATA_DIR,
+                        'credit_report' if 'credit' in cp.document_name_new.lower() else 'model_doc',
+                        cp.document_name_new.replace('_updated.docx', '_new.docx')  # <--- temporary, for demo only!
+                    )
+                    with open(fp_updated_doc_for_demo, 'rb') as f:
+                        updated_doc = f.read()
+                    st.session_state['updated_doc'] = updated_doc
+
+            # persist download button for session if updated doc is available
+            if st.session_state.get('updated_doc'):
+                st.download_button('Download', data=updated_doc, file_name=cp.document_name_new)
 
 with tab2:
     st.header('Audit document changes')
@@ -226,11 +188,38 @@ with tab2:
         for change_record in cp.change_records:
             with st.expander(change_record['change_description']):
                 col1, col2, col3 = st.columns([0.45, 0.1, 0.45])
-                change_record['content_type'] = 'table'  # <---- temporary, remove later!!
-                if change_record['content_type'] == 'table':
-                    col1.write(to_dataframe_safe(change_record['old_content']))
+                fp_new = change_record['file_path']
+                fp_ext = os.path.splitext(fp_new)[1]
+                fp_old = os.path.join(
+                    os.path.dirname(fp_new),
+                    change_record['file_name'].replace(f'_new{fp_ext}', f'_old{fp_ext}')
+                )
+                if change_record['content_type'].lower() == 'table':
+                    old_table = None
+                    new_table = None
+                    if fp_ext == '.csv':
+                        old_table = pd.read_csv(fp_old)
+                        new_table = pd.read_csv(fp_new)
+                    elif fp_ext == '.xlsx':
+                        old_table = pd.read_excel(fp_old)
+                        new_table = pd.read_excel(fp_new)
+                    if old_table is not None:
+                        col1.table(old_table)
+                    else:
+                        col1.write(old_table)
                     col2.markdown(':material/arrow_right_alt:')
-                    col3.write(to_dataframe_safe(change_record['new_content']))
+                    if new_table is not None:
+                        col3.table(new_table)
+                    else:
+                        col3.write(new_table)
+                # elif change_record['content_type'].lower() == 'image':
+                #     with open(fp_old, 'rb') as f:
+                #         old_image = f.read()
+                #     with open(fp_new, 'rb') as f:
+                #         new_image = f.read()
+                #     col1.image(old_image, use_container_width=True)
+                #     col2.markdown(':material/arrow_right_alt:')
+                #     col3.image(new_image, use_container_width=True)
                 else:
                     col1.write(change_record['old_content'])
                     col2.markdown(':material/arrow_right_alt:')
@@ -278,7 +267,7 @@ with tab3:
         else:
             retrieval_qa = cp.retrieval_qa
 
-        relevant_document_obj = cp.vector_store.similarity_search(user_question, doc_type=doc_type)
+        relevant_document_obj = cp.similarity_search(user_question, doc_type=doc_type)
         relevant_document = [obj.page_content for obj in relevant_document_obj if len(obj.page_content)>30]
         query = prompt_template.format(relevant_document=relevant_document,
                                        user_question=user_question,

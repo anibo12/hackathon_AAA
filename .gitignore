@@ -166,4 +166,4 @@ secrets.toml
 
 # Chroma DB
 chroma_langchain_db
-./src/aaa/tmp
+tmp

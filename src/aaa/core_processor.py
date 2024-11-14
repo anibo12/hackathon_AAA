@@ -156,7 +156,6 @@ class CoreProcessor:
             verbose=True
         )
 
-
     def _clear_vector_store(self, clear_all=True):
         coll = self.vector_store.get()
 
@@ -280,16 +279,14 @@ class CoreProcessor:
                 return doc
 
     def similarity_search(self, query, k=8, doc_type=None):
-        filter_val = {}
+        filter_val = None
         if doc_type == 'new':
             filter_val = {"filename": self.document_name_new}
         elif doc_type == 'old':
             filter_val = {"filename": self.document_name_old}
         elif doc_type == 'change':
             filter_val = {"source": "change_record"}
-        return self.vector_store.similarity_search(query,
-                                                   search_kwargs={"k": k,
-                                                                  "filter": filter_val})
+        return self.vector_store.similarity_search(query, k=k, filter=filter_val)
 
     def rag_qna(self, query):
         response = self.retrieval_qa({"query": query})
